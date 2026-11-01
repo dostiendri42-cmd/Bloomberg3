@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard</title>
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body { background-color: #131722; color: #d1d4dc; font-family: sans-serif; padding: 20px; margin: 0; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .widget { background: #1e222d; padding: 15px; border-radius: 8px; cursor: pointer; transition: background 0.2s; position: relative; }
+        .widget:hover { background: #262a38; }
+        .header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .chart-container {
+            width: 100%;
+            height: 150px;
+            position: relative;
+            overflow: hidden;
+        }
+        .chart { height: 150px; width: 100%; position: relative; overflow: hidden; }
+        .change-positive { color: #4caf50; font-weight: bold; font-size: 0.9em; margin-left: 10px; }
+        .change-negative { color: #ef5350; font-weight: bold; font-size: 0.9em; margin-left: 10px; }
+        .change-neutral  { color: #888; font-weight: bold; font-size: 0.9em; margin-left: 10px; }
+        #term-structure-chart {
+            max-height: 100%;
+            max-width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Dashboard</h1>
+    <div class="grid" id="dashboard"></div>
+
+    <div style="margin-top: 40px; padding: 20px; background: #1e222d; border-radius: 8px;">
+        <h2 style="margin-bottom: 15px;">📈 Curva dei Rendimenti Treasury USA</h2>
+        <div style="position: relative; height: 400px; width: 100%;">
+            <canvas id="term-structure-chart"></canvas>
+        </div>
+        <div id="term-structure-table" style="margin-top: 20px; color: #d1d4dc;"></div>
+    </div>
+    <script>
+        function formatChartTime(t) {
+            if (t === null || t === undefined) return 'N/D';
+            if (typeof t === 'number') {
+                return new Date(t * 1000).toLocaleDateString('it-IT');
+            }
+            if (typeof t === 'string') {
+                return t;
+            }
+            if (t && t.year !== undefined) {
+                return `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+            }
+            return 'N/D';
+        }
+
+        async function init() {
+            const res = await fetch('/api/assets');
+            const assets = await res.json();
+            const dashboard = document.getElementById('dashboard');
+            assets.forEach(asset => {
+                const widget = document.createElement('div');
+                widget.className = 'widget';
+                widget.onclick = () => window.location.href = '/asset.html?ticker=' + asset.ticker;
+                widget.innerHTML = `
+                    <div id="tooltip-${asset.ticker}" style="position: absolute; top: 30px; left: 10px; background: rgba(30,34,45,0.9); color: #d1d4dc; padding: 5px 8px; border-radius: 4px; font-family: monospace; font-size: 11px; pointer-events: none; display: none; z-index: 10; border: 1px solid #2B2B43;"></div>
+                    <div class="header">
+                        <strong>${asset.name}</strong>
+                        <span>
+                            <span id="price-${asset.ticker}">-</span>
+                            <span id="change-${asset.ticker}" class="change-neutral"></span>
+                        </span>
+                    </div>
+                    <div class="chart" id="chart-${asset.ticker}"></div>
+                `;
+                dashboard.appendChild(widget);
+                loadChart(asset);
+            });
+            await loadTermStructure();
+        }
+        async function loadChart(asset) {
+            const res = await fetch(`/api/history/${encodeURIComponent(asset.ticker)}?period=1Y`);
+            const data = await res.json();
+            const container = document.getElementById(`chart-${asset.ticker}`);
+            if(!data || data.length === 0) { container.innerHTML = '<p style="color:gray;text-align:center;">N/D</p>'; return; }
+            
+            const changeEl = document.getElementById(`change-${asset.ticker}`);
+            if (data && data.length >= 2 && changeEl) {
+                const lastClose = data[data.length - 1].value;
+                const prevClose = data[data.length - 2].value;
+                const pctChange = ((lastClose - prevClose) / prevClose) * 100;
+                
+                changeEl.textContent = (pctChange > 0 ? '+' : '') + pctChange.toFixed(2) + '%';
+                
+                if (pctChange > 0) {
+                    changeEl.className = 'change-positive';
+                } else if (pctChange < 0) {
+                    changeEl.className = 'change-negative';
+                } else {
+                    changeEl.className = 'change-neutral';
+                }
+            }
+
+            container.innerHTML = '';
+            const chart = LightweightCharts.createChart(container, { width: container.clientWidth, height: 150, layout: { background: { color: '#1e222d' }, textColor: '#d1d4dc' }, timeScale: { visible: false }, grid: { vertLines: { visible: false }, horzLines: { visible: false } } });
+            const lineSeries = chart.addLineSeries({ color: '#2962FF', lineWidth: 2 });
+            lineSeries.setData(data);
+
+            chart.subscribeCrosshairMove(param => {
+                const tooltip = document.getElementById(`tooltip-${asset.ticker}`);
+                if (!param.time || !param.point) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+                const data = param.seriesData.get(lineSeries);
+                if (!data || data.value === undefined) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+                tooltip.style.display = 'block';
+                const dateStr = formatChartTime(param.time);
+                tooltip.innerHTML = `<div>${dateStr}</div><div>Close: <span style="color:#26a69a;">${data.value.toFixed(2)}</span></div>`;
+            });
+        }
+
+        async function loadTermStructure() {
+            const res = await fetch('/api/yields');
+            const data = await res.json();
+            
+            if (!data.curve || Object.keys(data.curve).length === 0) {
+                document.getElementById('term-structure-chart').parentElement.innerHTML = '<p style="color:#d1d4dc;">Dati Treasury non disponibili.</p>';
+                return;
+            }
+
+            // Ordine corretto delle 13 scadenze
+            const orderedTenors = ['1M', '2M', '3M', '4M', '6M', '1Y', '2Y', '3Y', '5Y', '7Y', '10Y', '20Y', '30Y'];
+            const labels = [];
+            const values = [];
+            orderedTenors.forEach(tenor => {
+                if (data.curve[tenor] !== undefined) {
+                    labels.push(tenor);
+                    values.push(data.curve[tenor]);
+                }
+            });
+
+            const ctx = document.getElementById('term-structure-chart').getContext('2d');
+            if (window.termChart) window.termChart.destroy();
+            
+            window.termChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: `Curva Treasury USA (${data.date})`,
+                        data: values,
+                        borderColor: '#2962FF',
+                        backgroundColor: 'rgba(41, 98, 255, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 5,
+                        pointBackgroundColor: '#2962FF',
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#d1d4dc' } },
+                        tooltip: { callbacks: { label: (ctx) => `Rendimento: ${ctx.parsed.y}%` } }
+                    },
+                    scales: {
+                        x: { ticks: { color: '#d1d4dc' }, grid: { color: '#2B2B43' }, title: { display: true, text: 'Scadenza', color: '#d1d4dc' } },
+                        y: { ticks: { color: '#d1d4dc' }, grid: { color: '#2B2B43' }, title: { display: true, text: 'Rendimento (%)', color: '#d1d4dc' } }
+                    }
+                }
+            });
+
+            let tableHtml = '<table style="width:100%; border-collapse:collapse; color:#d1d4dc;"><thead><tr style="background:#2a2e39;"><th style="padding:8px; text-align:left;">Scadenza</th><th style="padding:8px; text-align:right;">Rendimento</th></tr></thead><tbody>';
+            labels.forEach((label, i) => {
+                tableHtml += `<tr><td style="padding:5px 8px; border-bottom:1px solid #2B2B43;">${label}</td><td style="padding:5px 8px; border-bottom:1px solid #2B2B43; text-align:right;">${values[i]}%</td></tr>`;
+            });
+            tableHtml += '</tbody></table>';
+            document.getElementById('term-structure-table').innerHTML = tableHtml;
+        }
+
+        init();
+    </script>
+</body>
+</html>

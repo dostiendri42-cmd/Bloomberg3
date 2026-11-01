@@ -1,0 +1,14 @@
+# Regole per lo Sviluppo Autonomo
+
+## Testing e Debugging (IMPORTANTE)
+- Per avviare il server Flask, usa SEMPRE lo strumento `daemonize_start` del server MCP `daemonize`. Non usare MAI `python app.py` direttamente nel terminale, perché bloccherebbe la sessione e andrebbe in timeout.
+- Dopo aver avviato il server, usa lo strumento `browser_navigate` per andare su `http://localhost:5000`.
+- Leggi SEMPRE gli errori usando lo strumento `browser_console_logs` prima di provare a correggere il codice. Non tirare a indovinare.
+- Se il server non risponde o la pagina è bianca, controlla i log del server con lo strumento `daemonize_logs`.
+
+## Prevenzione dei Loop Infiniti
+- Non ripetere mai lo stesso comando più di 2 volte. Se fallisce, cambia approccio.
+- Se non riesci a risolvere un errore dopo 3 tentativi, fermati e riportami il problema esatto.
+
+## Ambiente
+- Il backend è in Python (Flask). Il frontend è HTML/JS puro. Non usare React, Node o npm.

@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Dettaglio Asset</title>
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body { background-color: #131722; color: #d1d4dc; font-family: sans-serif; padding: 20px; margin: 0; }
+        h1 { margin-bottom: 20px; }
+        .back-btn { background: #2a2e39; color: white; padding: 8px 15px; text-decoration: none; border-radius: 4px; display: inline-block; margin-bottom: 20px; }
+        .container { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .panel { background: #1e222d; padding: 15px; border-radius: 8px; }
+        #candle-chart { height: 400px; width: 100%; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #2B2B43; }
+        th { color: #888; }
+        .controls { margin-top: 10px; display: flex; gap: 5px; }
+        button { background: #2a2e39; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #363a45; }
+    </style>
+</head>
+<body>
+    <a href="/" class="back-btn">← Torna alla Dashboard</a>
+    <h1 id="asset-title">Caricamento...</h1>
+    
+    <div class="container">
+        <div class="panel" style="position: relative; padding-top: 40px;">
+            <div id="chart-legend" style="position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; flex-direction: column; gap: 5px; pointer-events: none;"></div>
+            <div id="crosshair-tooltip" style="position: absolute; top: 10px; right: 10px; background: rgba(30,34,45,0.95); color: #d1d4dc; padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 12px; pointer-events: none; display: none; z-index: 20; border: 1px solid #2B2B43;"></div>
+            <div style="color:#888; padding:5px 0;">📅 Candele giornaliere — Ultimo anno</div>
+            <div id="candle-chart"></div>
+            <div id="rsi-chart" style="height: 120px; width: 100%; margin-top: 5px; border-top: 1px solid #2B2B43;"></div>
+            
+            <div id="indicators-panel" style="margin-top: 20px; border-top: 1px solid #2B2B43; padding-top: 15px;">
+                <h4>Indicatori Tecnici</h4>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <select id="indicator-select" style="background:#2a2e39; color:white; border:none; padding:5px; border-radius:4px;">
+                        <option value="sma20">SMA 20</option>
+                        <option value="sma50">SMA 50</option>
+                        <option value="sma100">SMA 100</option>
+                        <option value="sma200">SMA 200</option>
+                        <option value="ema20">EMA 20</option>
+                        <option value="ema50">EMA 50</option>
+                        <option value="ema100">EMA 100</option>
+                        <option value="ema200">EMA 200</option>
+                    </select>
+                    <button onclick="addPredefinedIndicator()">Aggiungi Indicatore</button>
+                    <button onclick="clearIndicators()" style="background:#ef5350;">Rimuovi Tutti</button>
+                </div>
+                
+                <h4>Editor Codice Personalizzato</h4>
+                <p style="font-size: 0.8em; color: #888;">Scrivi codice JS che riceve <code>data</code> (array di OHLC) e restituisce un array di <code>{time, value}</code>. Es: <code>return data.map(d => ({time: d.time, value: (d.open + d.close) / 2}));</code></p>
+                <textarea id="custom-indicator-code" style="width:100%; height:80px; background:#131722; color:#d1d4dc; font-family:monospace; border:1px solid #2B2B43; padding:10px; box-sizing:border-box;" placeholder="// Scrivi qui il tuo codice..."></textarea>
+                <button onclick="runCustomIndicator()" style="margin-top: 10px;">Esegui Script</button>
+            </div>
+        </div>
+        <div class="panel">
+            <h3>Storico Dividendi</h3>
+            <table id="dividends-table">
+                <thead><tr><th>Data</th><th>Importo</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="panel" style="margin-top: 20px;">
+        <h3>Dati di Bilancio</h3>
+        <div style="margin-bottom: 15px; display: flex; gap: 20px;">
+            <div>
+                <strong>Periodo:</strong>
+                <button onclick="loadFinancials('annual')" id="btn-annual" style="background: #2962FF;">Annuale</button>
+                <button onclick="loadFinancials('quarterly')" id="btn-quarterly">Trimestrale</button>
+            </div>
+            <div>
+                <strong>Tavola:</strong>
+                <button onclick="loadStatement('income')" id="btn-income" style="background: #2962FF;">Conto Economico</button>
+                <button onclick="loadStatement('balance')" id="btn-balance">Stato Patrimoniale</button>
+                <button onclick="loadStatement('cashflow')" id="btn-cashflow">Cash Flow</button>
+            </div>
+        </div>
+        <div id="financials-container" style="overflow-x: auto;">
+            <p>Seleziona i parametri per caricare i dati.</p>
+        </div>
+    </div>
+
+
+
+    <script>
+        console.log("[DEBUG] Script caricato correttamente");
+        const urlParams = new URLSearchParams(window.location.search);
+        const ticker = urlParams.get('ticker');
+        let currentPeriod = 'annual';
+        let currentStatement = 'income';
+        let chart = null;
+        let candleSeries = null;
+        let rsiChart = null;
+        let rsiSeries = null;
+        let activeIndicators = {};
+        let isSyncing = false;
+        let activeSeriesMap = {};
+        const COLORS = ['#FF5722', '#2196F3', '#4CAF50', '#FFEB3B', '#E91E63', '#00BCD4'];
+        let colorIndex = 0;
+
+        function formatChartTime(t) {
+            if (t === null || t === undefined) return 'N/D';
+            if (typeof t === 'number') {
+                return new Date(t * 1000).toLocaleDateString('it-IT');
+            }
+            if (typeof t === 'string') {
+                return t;
+            }
+            if (t && t.year !== undefined) {
+                return `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+            }
+            return 'N/D';
+        }
+
+
+        async function init() {
+            if (!ticker) {
+                document.getElementById('asset-title').textContent = "Nessun asset selezionato";
+                return;
+            }
+            document.getElementById('asset-title').textContent = ticker;
+            initChart();
+            await loadCandles('1Y');
+            await addIndicator('rsi14');
+            await loadDividends();
+            await fetchAndRenderFinancials();
+        }
+
+        function initChart() {
+            const container = document.getElementById('candle-chart');
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: 400,
+                layout: { background: { color: '#1e222d' }, textColor: '#d1d4dc' },
+                grid: { vertLines: { color: '#2B2B43' }, horzLines: { color: '#2B2B43' } },
+            });
+            candleSeries = chart.addCandlestickSeries({
+                upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+                wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+            });
+            activeSeriesMap['Close'] = { series: candleSeries, chart: chart };
+
+            const rsiContainer = document.getElementById('rsi-chart');
+            rsiChart = LightweightCharts.createChart(rsiContainer, {
+                width: rsiContainer.clientWidth,
+                height: 120,
+                layout: { background: { color: '#1e222d' }, textColor: '#d1d4dc' },
+                grid: { vertLines: { color: '#2B2B43' }, horzLines: { color: '#2B2B43' } },
+            });
+            rsiSeries = rsiChart.addLineSeries({ color: '#9C27B0' });
+            rsiSeries.createPriceLine({ price: 70, color: 'red', lineStyle: 2 });
+            rsiSeries.createPriceLine({ price: 30, color: 'green', lineStyle: 2 });
+            activeSeriesMap['RSI 14'] = { series: rsiSeries, chart: rsiChart };
+
+            chart.timeScale().fitContent();
+            rsiChart.timeScale().fitContent();
+
+            chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (isSyncing || !range) return;
+                isSyncing = true;
+                rsiChart.timeScale().setVisibleLogicalRange(range);
+                isSyncing = false;
+            });
+            rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+                if (isSyncing || !range) return;
+                isSyncing = true;
+                chart.timeScale().setVisibleLogicalRange(range);
+                isSyncing = false;
+            });
+
+            chart.subscribeCrosshairMove(param => {
+                const tooltip = document.getElementById('crosshair-tooltip');
+                if (!param.time || !param.point) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+                tooltip.style.display = 'block';
+                const dateStr = formatChartTime(param.time);
+                let html = `<div style="font-weight:bold; margin-bottom:4px;">${dateStr}</div>`;
+                for (const [name, { series }] of Object.entries(activeSeriesMap)) {
+                    const val = param.seriesData.get(series);
+                    if (val) {
+                        const displayVal = val.close !== undefined ? val.close : val.value;
+                        if (displayVal !== undefined) {
+                            html += `<div>${name}: <span style="color:#26a69a;">${displayVal.toFixed(2)}</span></div>`;
+                        }
+                    }
+                }
+                tooltip.innerHTML = html;
+            });
+        }
+
+        async function loadCandles(period) {
+            try {
+                const res = await fetch(`/api/candles/${encodeURIComponent(ticker)}?period=1Y`);
+                const data = await res.json();
+                if (data && data.length > 0) {
+                    currentCandleData = data;
+                    candleSeries.setData(data);
+                    console.log("[DEBUG] Candele caricate:", data.length);
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function calculateSMA(data, period) {
+            let values = [];
+            for (let i = 0; i < data.length; i++) {
+                if (i < period - 1) continue;
+                let sum = 0;
+                for (let j = 0; j < period; j++) {
+                    sum += data[i - j].close;
+                }
+                values.push({ time: data[i].time, value: sum / period });
+            }
+            return values;
+        }
+
+        function calculateEMA(data, period) {
+            let values = [];
+            const k = 2 / (period + 1);
+            let prevEma = null;
+            for (let i = 0; i < data.length; i++) {
+                const close = data[i].close;
+                if (i < period - 1) continue;
+                if (prevEma === null) {
+                    let sum = 0;
+                    for (let j = 0; j <= i; j++) {
+                        sum += data[j].close;
+                    }
+                    prevEma = sum / (i + 1);
+                } else {
+                    prevEma = (close * k) + (prevEma * (1 - k));
+                }
+                values.push({ time: data[i].time, value: prevEma });
+            }
+            return values;
+        }
+
+        function calculateRSI(data, period = 14) {
+            let values = [];
+            for (let i = 0; i < data.length; i++) {
+                if (i < period) {
+                    values.push({ time: data[i].time, value: 50 });
+                    continue;
+                }
+                let gains = 0;
+                let losses = 0;
+                for (let j = i - period + 1; j <= i; j++) {
+                    const change = data[j].close - data[j - 1].close;
+                    if (change >= 0) gains += change;
+                    else losses -= change;
+                }
+                let avgGain = gains / period;
+                let avgLoss = losses / period;
+                let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+                let rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + rs));
+                values.push({ time: data[i].time, value: rsi });
+            }
+            return values;
+        }
+        async function addIndicator(typeOrVal) {
+            try {
+                const selected = typeOrVal || document.getElementById('indicator-select').value;
+                console.log("[DEBUG] addIndicator chiamata con:", selected);
+                if (!currentCandleData || currentCandleData.length === 0) return;
+
+                let values = [];
+                let name = '';
+                let isRsi = false;
+
+                if (selected === 'sma20') { values = calculateSMA(currentCandleData, 20); name = 'SMA 20'; }
+                else if (selected === 'sma50') { values = calculateSMA(currentCandleData, 50); name = 'SMA 50'; }
+                else if (selected === 'sma100') { values = calculateSMA(currentCandleData, 100); name = 'SMA 100'; }
+                else if (selected === 'sma200') { values = calculateSMA(currentCandleData, 200); name = 'SMA 200'; }
+                else if (selected === 'ema20') { values = calculateEMA(currentCandleData, 20); name = 'EMA 20'; }
+                else if (selected === 'ema50') { values = calculateEMA(currentCandleData, 50); name = 'EMA 50'; }
+                else if (selected === 'ema100') { values = calculateEMA(currentCandleData, 100); name = 'EMA 100'; }
+                else if (selected === 'ema200') { values = calculateEMA(currentCandleData, 200); name = 'EMA 200'; }
+                else if (selected === 'rsi14') { values = calculateRSI(currentCandleData, 14); name = 'RSI 14'; isRsi = true; }
+
+                if (values.length === 0) return;
+
+                const chosenColor = COLORS[colorIndex % COLORS.length];
+                colorIndex++;
+
+                let series;
+                if (isRsi) {
+                    rsiSeries.setData(values);
+                    rsiSeries.applyOptions({ color: chosenColor });
+                    series = rsiSeries;
+                    activeSeriesMap[name] = { series: rsiSeries, chart: rsiChart };
+                } else {
+                    series = chart.addLineSeries({ color: chosenColor });
+                    series.setData(values);
+                    activeSeriesMap[name] = { series: series, chart: chart };
+                }
+
+                const mainRange = chart.timeScale().getVisibleLogicalRange();
+                if (mainRange) rsiChart.timeScale().setVisibleLogicalRange(mainRange);
+
+                const id = 'ind_' + Math.random().toString(36).substring(2, 9);
+                activeIndicators[id] = { series: series, name: name, isRsi: isRsi };
+
+                updateLegend();
+            } catch (e) {
+                console.error("[DEBUG] Errore:", e);
+            }
+        }
+
+        function addPredefinedIndicator() {
+            addIndicator();
+        }
+
+        function updateLegend() {
+            const legendContainer = document.getElementById('chart-legend');
+            legendContainer.innerHTML = '';
+            for (const [id, item] of Object.entries(activeIndicators)) {
+                const div = document.createElement('div');
+                div.style.cssText = 'display: flex; align-items: center; gap: 8px; background: rgba(30, 34, 45, 0.8); padding: 4px 8px; border-radius: 4px; font-size: 12px; pointer-events: auto;';
+                
+                const colorInput = document.createElement('input');
+                colorInput.type = 'color';
+                colorInput.value = item.series.options().color || '#ffffff';
+                colorInput.style.cssText = 'border: none; width: 16px; height: 16px; cursor: pointer; background: none;';
+                colorInput.oninput = (e) => {
+                    item.series.applyOptions({ color: e.target.value });
+                };
+
+                const span = document.createElement('span');
+                span.textContent = item.name;
+                span.style.color = '#d1d4dc';
+
+                div.appendChild(colorInput);
+                div.appendChild(span);
+                legendContainer.appendChild(div);
+            }
+        }
+
+        function clearIndicators() {
+            for (const [id, item] of Object.entries(activeIndicators)) {
+                if (!item.isRsi) {
+                    chart.removeSeries(item.series);
+                } else {
+                    item.series.setData([]);
+                }
+            }
+            activeIndicators = {};
+            colorIndex = 0;
+            updateLegend();
+        }
+
+        window.addPredefinedIndicator = addPredefinedIndicator;
+        window.clearIndicators = clearIndicators;
+        window.runCustomIndicator = runCustomIndicator;
+
+        function runCustomIndicator() {
+            const userCode = document.getElementById('custom-indicator-code').value;
+            try {
+                const fn = new Function('data', userCode);
+                const result = fn(currentCandleData);
+                if (Array.isArray(result) && result.length > 0) {
+                    const chosenColor = COLORS[colorIndex % COLORS.length];
+                    colorIndex++;
+                    const lineSeries = chart.addLineSeries({ color: chosenColor });
+                    lineSeries.setData(result);
+
+                    const name = 'Custom Script';
+                    const id = 'ind_' + Math.random().toString(36).substring(2, 9);
+                    activeIndicators[id] = { series: lineSeries, name: name, isRsi: false };
+                    activeSeriesMap[name] = { series: lineSeries, chart: chart };
+
+                    updateLegend();
+                } else {
+                    alert("Il codice non ha restituito un array valido di {time, value}.");
+                }
+            } catch (e) {
+                console.error(e);
+                alert("Errore nell'esecuzione dello script: " + e.message);
+            }
+        }
+
+        async function loadDividends() {
+            try {
+                const res = await fetch(`/api/dividends/${encodeURIComponent(ticker)}`);
+                const data = await res.json();
+                const tbody = document.querySelector('#dividends-table tbody');
+                tbody.innerHTML = '';
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="2">Nessun dividendo disponibile</td></tr>';
+                    return;
+                }
+                data.forEach(div => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td>${div.date}</td><td>${div.amount.toFixed(4)}</td>`;
+                    tbody.appendChild(tr);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadFinancials(period) {
+            currentPeriod = period;
+            document.getElementById('btn-annual').style.background = period === 'annual' ? '#2962FF' : '#2a2e39';
+            document.getElementById('btn-quarterly').style.background = period === 'quarterly' ? '#2962FF' : '#2a2e39';
+            await fetchAndRenderFinancials();
+        }
+
+        async function loadStatement(statement) {
+            currentStatement = statement;
+            document.getElementById('btn-income').style.background = statement === 'income' ? '#2962FF' : '#2a2e39';
+            document.getElementById('btn-balance').style.background = statement === 'balance' ? '#2962FF' : '#2a2e39';
+            document.getElementById('btn-cashflow').style.background = statement === 'cashflow' ? '#2962FF' : '#2a2e39';
+            await fetchAndRenderFinancials();
+        }
+
+        // Funzione per normalizzare: rimuove spazi, underscore, e mette tutto in minuscolo
+        const norm = (s) => String(s).toLowerCase().replace(/[\s_\-]/g, '');
+
+        async function fetchAndRenderFinancials() {
+            const container = document.getElementById('financials-container');
+            container.innerHTML = '<p>Caricamento in corso...</p>';
+            
+            try {
+                const res = await fetch(`/api/financials/${encodeURIComponent(ticker)}?statement=${currentStatement}&period=${currentPeriod}`);
+                let data = await res.json();
+                
+                if (!data || Object.keys(data).length === 0) {
+                    container.innerHTML = '<p>Dati non disponibili per questa selezione.</p>';
+                    return;
+                }
+
+                // --- RILEVAMENTO AUTOMATICO DELLA STRUTTURA ---
+                // Se le chiavi esterne sono date (es. "2021-12-31"), il JSON è trasposto.
+                // Lo correggiamo per avere sempre {campo: {data: valore}}
+                const firstKey = Object.keys(data)[0];
+                const isTransposed = /^\d{4}-\d{2}-\d{2}/.test(firstKey);
+                
+                if (isTransposed) {
+                    // Trasponiamo: {data: {campo: val}} -> {campo: {data: val}}
+                    let transposed = {};
+                    for (const [date, fields] of Object.entries(data)) {
+                        for (const [field, value] of Object.entries(fields)) {
+                            if (!transposed[field]) transposed[field] = {};
+                            transposed[field][date] = value;
+                        }
+                    }
+                    data = transposed;
+                }
+
+                // Da qui in poi, data è sempre {campo: {data: valore}}
+                const rows = Object.keys(data);
+                const columns = Object.keys(data[rows[0]] || {});
+
+                // --- LOGICA DI MAPPATURA TOLLERANTE ---
+                const isBank = ['ISP.MI', 'BNP.PA'].includes(ticker);
+                const isInsurance = ['G.MI', 'CS.PA', 'ALV.DE'].includes(ticker);
+
+                let categories = [];
+                if (currentStatement === 'income') {
+                    if (isBank) {
+                        categories = [
+                            { name: "Ricavi e Interessi", keywords: ["revenue", "interestincome", "netinterest"] },
+                            { name: "Costi e Oneri", keywords: ["cost", "expense", "operatingexpense"] },
+                            { name: "Utili e Margini", keywords: ["income", "profit", "eps", "ebit", "tax"] }
+                        ];
+                    } else if (isInsurance) {
+                        categories = [
+                            { name: "Ricavi e Premi", keywords: ["revenue", "premium"] },
+                            { name: "Sinistri e Costi", keywords: ["claim", "benefit", "cost", "expense"] },
+                            { name: "Utili e Margini", keywords: ["income", "profit", "eps", "ebit"] }
+                        ];
+                    } else {
+                        categories = [
+                            { name: "Ricavi", keywords: ["revenue", "sales"] },
+                            { name: "Costi e Margini", keywords: ["cost", "gross", "operating", "margin", "r&d", "research"] },
+                            { name: "Utili", keywords: ["income", "profit", "eps", "ebit", "tax"] }
+                        ];
+                    }
+                } else if (currentStatement === 'balance') {
+                    if (isBank) {
+                        categories = [
+                            { name: "Attivo (Impieghi)", keywords: ["asset", "loan", "cash", "security", "investment", "receivable"] },
+                            { name: "Passivo (Debiti)", keywords: ["liability", "debt", "payable", "deposit"] },
+                            { name: "Patrimonio Netto", keywords: ["equity", "stock", "capital", "retained"] }
+                        ];
+                    } else if (isInsurance) {
+                        categories = [
+                            { name: "Attivo", keywords: ["asset", "cash", "investment", "receivable"] },
+                            { name: "Passivo", keywords: ["liability", "debt", "payable"] },
+                            { name: "Patrimonio Netto", keywords: ["equity", "stock", "capital", "retained"] }
+                        ];
+                    } else {
+                        categories = [
+                            { name: "Attivo Corrente", keywords: ["currentasset", "inventory", "receivable"] },
+                            { name: "Attivo Non Corrente", keywords: ["noncurrentasset", "ppe", "goodwill", "intangible", "property"] },
+                            { name: "Passivo Corrente", keywords: ["currentliabilit", "accountspayable", "shortterm"] },
+                            { name: "Passivo Non Corrente", keywords: ["noncurrentliabilit", "longtermdebt"] },
+                            { name: "Patrimonio Netto", keywords: ["equity", "stock", "capital", "retained"] }
+                        ];
+                    }
+                } else if (currentStatement === 'cashflow') {
+                    categories = [
+                        { name: "Cash Flow Operativo", keywords: ["operating", "netincome", "depreciation", "workingcapital"] },
+                        { name: "Cash Flow Investimenti", keywords: ["investing", "capitalexpenditure", "purchaseofppe", "saleofppe"] },
+                        { name: "Cash Flow Finanziamenti", keywords: ["financing", "dividend", "debt", "stockissuance", "repurchase"] },
+                        { name: "Variazione di Cassa", keywords: ["changesincash", "endcash", "beginningcash"] }
+                    ];
+                }
+
+                // Raggruppa le righe
+                let grouped = {};
+                let other = [];
+                categories.forEach(c => grouped[c.name] = []);
+
+                rows.forEach(row => {
+                    const normalizedRow = norm(row);
+                    let placed = false;
+                    for (const cat of categories) {
+                        if (cat.keywords.some(kw => normalizedRow.includes(norm(kw)))) {
+                            grouped[cat.name].push(row);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if (!placed) other.push(row);
+                });
+
+                // Genera HTML
+                let html = '<table style="width:100%; border-collapse:collapse;"><thead><tr><th style="text-align:left; padding:8px;">Voce</th>';
+                columns.forEach(col => { html += `<th style="text-align:right; padding:8px;">${col}</th>`; });
+                html += '</tr></thead><tbody>';
+
+                const renderRow = (row) => {
+                    let r = `<tr><td style="padding:5px 8px; border-bottom:1px solid #2B2B43;">${row}</td>`;
+                    columns.forEach(col => {
+                        let val = data[row][col];
+                        if (typeof val === 'number') {
+                            if (Math.abs(val) > 1e9) val = (val / 1e9).toFixed(2) + 'B';
+                            else if (Math.abs(val) > 1e6) val = (val / 1e6).toFixed(2) + 'M';
+                        }
+                        r += `<td style="text-align:right; padding:5px 8px; border-bottom:1px solid #2B2B43;">${val}</td>`;
+                    });
+                    return r + '</tr>';
+                };
+
+                for (const [name, rowNames] of Object.entries(grouped)) {
+                    if (rowNames.length > 0) {
+                        html += `<tr><td colspan="${columns.length + 1}" style="background-color:#2a2e39; color:#fff; font-weight:bold; padding:8px;">${name}</td></tr>`;
+                        rowNames.forEach(row => { html += renderRow(row); });
+                    }
+                }
+                if (other.length > 0) {
+                    html += `<tr><td colspan="${columns.length + 1}" style="background-color:#2a2e39; color:#fff; font-weight:bold; padding:8px;">Altre Voci</td></tr>`;
+                    other.forEach(row => { html += renderRow(row); });
+                }
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+
+            } catch (e) {
+                console.error("Errore:", e);
+                container.innerHTML = '<p>Errore nel caricamento dei dati.</p>';
+            }
+        }
+
+
+
+        init();
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const chatToggle = document.getElementById('chat-toggle');
+            const chatPanel = document.getElementById('chat-panel');
+            const chatClose = document.getElementById('chat-close');
+            const chatInput = document.getElementById('chat-input');
+            const chatSend = document.getElementById('chat-send');
+            const chatMessages = document.getElementById('chat-messages');
+
+            if (!chatToggle || !chatPanel) {
+                console.error('Elementi chat non trovati');
+                return;
+            }
+
+            let autoAnalysisDone = false; // Flag per evitare ripetizioni
+
+            // Funzione che aggiunge un messaggio utente alla chat
+            function addUserMessage(text) {
+                chatMessages.innerHTML += `<div style="align-self: flex-end; background: #2962FF; color: white; padding: 8px 12px; border-radius: 12px; max-width: 85%;">${text}</div>`;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            // Funzione che aggiunge un messaggio di sistema/errore
+            function addSystemMessage(text, isError = false) {
+                const color = isError ? '#ef5350' : '#d1d4dc';
+                chatMessages.innerHTML += `<div style="align-self: flex-start; color: ${color}; padding: 8px; font-size: 0.9em;">${text}</div>`;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            // Funzione principale che invia un messaggio al backend
+            async function sendChatMessage(messageText) {
+                const msg = messageText || chatInput.value.trim();
+                if (!msg) return;
+                
+                addUserMessage(msg);
+                if (!messageText) chatInput.value = ''; // Svuota l'input solo se digitato manualmente
+
+                const loadingId = 'loading-' + Date.now();
+                chatMessages.innerHTML += `<div id="${loadingId}" style="align-self: flex-start; background: #2a2e39; color: #888; padding: 8px 12px; border-radius: 12px;">Sto analizzando...</div>`;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                try {
+                    const res = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ticker: ticker, message: msg })
+                    });
+                    const data = await res.json();
+                    document.getElementById(loadingId).remove();
+                    const formattedReply = data.reply.replace(/\n/g, '<br>');
+                    chatMessages.innerHTML += `<div style="align-self: flex-start; background: #2a2e39; color: #d1d4dc; padding: 8px 12px; border-radius: 12px; max-width: 85%; line-height: 1.4;">${formattedReply}</div>`;
+                } catch (e) {
+                    document.getElementById(loadingId).remove();
+                    addSystemMessage(`Errore: ${e.message}`, true);
+                }
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            // Gestione click sul pulsante "Analizza titolo"
+            chatToggle.addEventListener('click', () => {
+                const isOpening = chatPanel.style.display !== 'flex';
+                chatPanel.style.display = isOpening ? 'flex' : 'none';
+
+                // Se stiamo aprendo per la prima volta, avvia automaticamente l'analisi
+                if (isOpening && !autoAnalysisDone) {
+                    autoAnalysisDone = true;
+                    sendChatMessage('Come va il titolo?');
+                }
+            });
+
+            // Chiusura pannello
+            chatClose.addEventListener('click', () => { chatPanel.style.display = 'none'; });
+
+            // Invio manuale (click sul bottone o Enter)
+            chatSend.addEventListener('click', () => sendChatMessage());
+            chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendChatMessage(); });
+        });
+    </script>
+<button id="chat-toggle" style="position: fixed; bottom: 30px; right: 30px; width: 140px; height: 60px; border-radius: 30px; background: #2962FF; color: white; border: none; cursor: pointer; font-size: 14px; font-weight: bold; box-shadow: 0 4px 12px rgba(0,0,0,0.4); z-index: 1000; display: flex; align-items: center; justify-content: center; gap: 6px;">📊 Analizza titolo</button>
+
+<div id="chat-panel" style="display: none; position: fixed; bottom: 100px; right: 30px; width: 400px; height: 500px; background: #1e222d; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 1000; flex-direction: column; overflow: hidden;">
+    <div style="background: #2a2e39; padding: 15px; display: flex; justify-content: space-between; align-items: center;">
+        <strong>🤖 Analista AI</strong>
+        <button id="chat-close" style="background: none; border: none; color: white; cursor: pointer; font-size: 20px;">✕</button>
+    </div>
+    <div id="chat-messages" style="flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;"></div>
+    <div style="padding: 10px; border-top: 1px solid #2B2B43; display: flex; gap: 5px;">
+        <input id="chat-input" type="text" placeholder="Chiedi un'analisi..." style="flex: 1; padding: 8px; border-radius: 4px; border: none; background: #131722; color: #d1d4dc;">
+        <button id="chat-send" style="padding: 8px 15px; background: #2962FF; color: white; border: none; border-radius: 4px; cursor: pointer;">Invia</button>
+    </div>
+</div>
+
+</body>
+</html>
