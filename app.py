@@ -330,5 +330,7 @@ Domanda dell'utente: {message}
         print(f"Errore chat: {e}")
         return jsonify({'reply': f"Errore durante l'elaborazione: {str(e)}"})
 
-if __name__ == '__main__': app.run(debug=True, port=5000, threaded=True)
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
