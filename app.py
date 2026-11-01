@@ -1,6 +1,5 @@
 from flask import Flask, jsonify, send_from_directory, request
 import requests
-import pdfplumber
 import io
 from datetime import datetime
 import os
